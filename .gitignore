@@ -1,27 +1,3 @@
-<<<<<<< HEAD
 node_modules/
-=======
-# node
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# firebase / emulator logs
-firebase-debug.log
-firestore-debug.log
-ui-debug.log
-*.log
-
-# TS build outputs
-lib/
-dist/
-
-# env
-.env
-.env.local
-.env.*.local
-
-# mac
-.DS_Store
->>>>>>> 6a4aa5553558af8b7463bf889c73ee342ea7f2f4
+festival-safety/apps/web/.env.local
+festival-safety/apps/web/.env.local
