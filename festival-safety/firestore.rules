@@ -2,10 +2,18 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+<<<<<<< HEAD
+=======
+    // ---------- Helpers ----------
+>>>>>>> 6a4aa5553558af8b7463bf889c73ee342ea7f2f4
     function signedIn() {
       return request.auth != null;
     }
 
+<<<<<<< HEAD
+=======
+    // ----- Events (existing helpers) -----
+>>>>>>> 6a4aa5553558af8b7463bf889c73ee342ea7f2f4
     function isEventOrganizer(eventId) {
       return signedIn()
         && get(/databases/$(database)/documents/events/$(eventId)/members/$(request.auth.uid)).data.role == "organizer";
@@ -16,6 +24,7 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/events/$(eventId)/reports/$(reportId)).data.createdByUid == request.auth.uid;
     }
 
+<<<<<<< HEAD
     match /events/{eventId} {
       match /reports/{reportId} {
 
@@ -34,12 +43,114 @@ service cloud.firestore {
         }
 
         // optional: lock down actions too
+=======
+    // ----- Groups (NEW helpers) -----
+    function isGroupMember(groupId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid));
+    }
+
+    function isGroupOrganizer(groupId) {
+      return signedIn()
+        && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role == "organizer";
+    }
+
+    // =========================================================
+    // EVENTS
+    // =========================================================
+    match /events/{eventId} {
+
+      // (Optional) If your frontend needs to read event metadata:
+      // allow get, list: if signedIn();
+      // (Optional) If your frontend writes events directly (usually NO):
+      // allow create: if signedIn();
+      // allow update, delete: if isEventOrganizer(eventId);
+
+      match /reports/{reportId} {
+
+        // Organizers or report owner can read the report
+        allow read: if isEventOrganizer(eventId) || isReportOwner(eventId, reportId);
+
+        match /messages/{messageId} {
+          // allow listing/reading messages for organizers or report owner
+          allow read, list: if isEventOrganizer(eventId) || isReportOwner(eventId, reportId);
+
+          // allow creating messages for organizers or report owner
+          allow create: if isEventOrganizer(eventId) || isReportOwner(eventId, reportId);
+
+          // no edits/deletes
+          allow update, delete: if false;
+        }
+
+>>>>>>> 6a4aa5553558af8b7463bf889c73ee342ea7f2f4
         match /actions/{actionId} {
           allow read, list: if isEventOrganizer(eventId);
           allow create: if isEventOrganizer(eventId);
           allow update, delete: if false;
         }
       }
+<<<<<<< HEAD
     }
+=======
+
+      // (Optional) If your frontend needs to read event members for UI:
+      // match /members/{uid} {
+      //   allow read, list: if signedIn();
+      //   allow write: if false; // typically written by Cloud Functions
+      // }
+    }
+
+    // =========================================================
+    // GROUPS (PINS LIVE HERE)
+    //
+    // Pins are stored at:
+    // groups/{groupId}/members/{uid}.location  (lat,lng,label)
+    // groups/{groupId}/members/{uid}.shareLocation (boolean)
+    // =========================================================
+    match /groups/{groupId} {
+
+      // Let group members read the group document (name, joinCode if you store it here, etc.)
+      allow get, list: if isGroupMember(groupId);
+
+      // For demo: allow any signed-in user to create a group doc.
+      // If you only create groups via Cloud Functions, you can change this to: if false;
+      allow create: if signedIn();
+
+      // Only organizers can update/delete group doc
+      allow update, delete: if isGroupOrganizer(groupId);
+
+      match /members/{uid} {
+        // Members can read the member list (needed to render pins)
+        allow read, list: if isGroupMember(groupId);
+
+        // If you ONLY join via Cloud Functions, set create to false.
+        // If you want client-side join (not recommended), leave this true.
+        allow create: if false;
+
+        // Users can update ONLY their own member doc
+        // (toggle shareLocation + update location pin)
+        allow update: if signedIn() && request.auth.uid == uid;
+
+        // For demo: no deletes
+        allow delete: if false;
+      }
+    }
+
+    // =========================================================
+    // GROUP CODES (LOCKED DOWN)
+    //
+    // Join-by-code should happen via Cloud Function so users
+    // can't enumerate codes or read them directly.
+    // =========================================================
+    match /groupCodes/{code} {
+      allow read, write: if false;
+    }
+
+    // (Optional) If you used joinCodes instead of groupCodes:
+    // match /joinCodes/{code} {
+    //   allow read, write: if false;
+    // }
+
+>>>>>>> 6a4aa5553558af8b7463bf889c73ee342ea7f2f4
   }
 }

@@ -67,3 +67,21 @@ node_modules/
 
 # dataconnect generated files
 .dataconnect
+<<<<<<< HEAD
+=======
+
+#virtual environments
+venv/
+__pycache__/
+*.pt
+
+# ML Weights
+ml/*.pt
+
+# Results/Data
+ml/result*.jpg
+ml/crowd_result.jpg
+
+*.mp4
+.env
+>>>>>>> 6a4aa5553558af8b7463bf889c73ee342ea7f2f4
