@@ -1,8 +1,15 @@
-import * as functions from "firebase-functions";
+import { onRequest, onCall, HttpsError } from "firebase-functions/v2/https";
+
+// ✅ v1 auth trigger (works even if you use v2 elsewhere)
+import { auth as authV1 } from "firebase-functions/v1";
+
+// ✅ use Firestore FieldValue from admin SDK, not firebase-functions
+import { FieldValue } from "firebase-admin/firestore";
+
 import { db } from "./config/firebaseAdmin";
 
-// Health check
-export const health = functions.https.onRequest((req, res) => {
+// Health check (v2)
+export const health = onRequest((req, res) => {
   res.status(200).json({
     ok: true,
     service: "festival-safety-functions",
@@ -10,17 +17,13 @@ export const health = functions.https.onRequest((req, res) => {
   });
 });
 
-// Create Firestore user doc on signup (DO NOT overwrite role if it was already set)
-export const createUserProfile = functions.auth.user().onCreate(async (user) => {
+// Create Firestore user doc on signup (v1 auth trigger)
+export const createUserProfile = authV1.user().onCreate(async (user) => {
   const userRef = db().collection("users").doc(user.uid);
 
   await db().runTransaction(async (tx) => {
     const snap = await tx.get(userRef);
-
-    // If doc already exists (e.g., role was set by setAccountType), don't overwrite it.
-    if (snap.exists) {
-      return;
-    }
+    if (snap.exists) return;
 
     tx.set(userRef, {
       role: "attendee",
@@ -30,152 +33,96 @@ export const createUserProfile = functions.auth.user().onCreate(async (user) => 
   });
 });
 
+function makeCode() {
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  const pick = () => chars[Math.floor(Math.random() * chars.length)];
+  return `${pick()}${pick()}${pick()}${pick()}-${pick()}${pick()}${pick()}${pick()}`;
+}
 
-// 0) Set account type after signup (callable)
-// User picks attendee/organizer. For demo, organizer can be allowlisted.
-export const setAccountType = functions.https.onCall(async (data, context) => {
-  if (!context.auth) {
-    throw new functions.https.HttpsError("unauthenticated", "Login required.");
-  }
+// 0) Set account type (v2 callable)
+export const setAccountType = onCall(async (request) => {
+  const data = (request.data ?? {}) as any;
+  const auth = request.auth;
 
-  const { accountType } = data ?? {};
+  if (!auth) throw new HttpsError("unauthenticated", "Login required.");
+
+  const { accountType } = data;
   if (accountType !== "attendee" && accountType !== "organizer") {
-    throw new functions.https.HttpsError(
-      "invalid-argument",
-      "accountType must be attendee or organizer."
-    );
+    throw new HttpsError("invalid-argument", "accountType must be attendee or organizer.");
   }
 
-  const uid = context.auth.uid;
-  const email = (context.auth.token.email as string | undefined) ?? null;
-
-  // ---- DEMO GATE: organizer allowlist (edit to your needs) ----
-  // If you want to allow ANYONE to pick organizer for the demo, set REQUIRE_ALLOWLIST = false.
-  const REQUIRE_ALLOWLIST = false;
-
-  const ORGANIZER_ALLOWLIST = new Set<string>([
-    "organizer@demo.com",
-    // add your real organizer emails here:
-  ]);
-
-  if (accountType === "organizer" && REQUIRE_ALLOWLIST) {
-    if (!email || !ORGANIZER_ALLOWLIST.has(email.toLowerCase())) {
-      throw new functions.https.HttpsError(
-        "permission-denied",
-        "Organizer accounts require approval."
-      );
-    }
-  }
-  // ------------------------------------------------------------
-
-  await db().collection("users").doc(uid).set(
+  await db().collection("users").doc(auth.uid).set(
     {
-      role: accountType, // global account type for dashboard + permissions
-      email,
+      role: accountType,
+      email: (auth.token.email as string | undefined) ?? null,
       updatedAt: new Date(),
     },
     { merge: true }
   );
 
-  return { ok: true, role: accountType };
+  return { ok: true };
 });
 
-function makeCode() {
-  // simple readable code: XXXX-XXXX
-  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no O/0/I/1
-  const pick = () => chars[Math.floor(Math.random() * chars.length)];
-  return `${pick()}${pick()}${pick()}${pick()}-${pick()}${pick()}${pick()}${pick()}`;
-}
+// 1) Create event
+export const createEvent = onCall(async (request) => {
+  const data = (request.data ?? {}) as any;
+  const auth = request.auth;
 
-// 1) Create an event (callable)
-export const createEvent = functions.https.onCall(async (data, context) => {
-  if (!context.auth) {
-    throw new functions.https.HttpsError("unauthenticated", "Login required.");
+  if (!auth) throw new HttpsError("unauthenticated", "Login required.");
+
+  const userSnap = await db().collection("users").doc(auth.uid).get();
+  if (userSnap.data()?.role !== "organizer") {
+    throw new HttpsError("permission-denied", "Organizer required.");
   }
 
-  const uid = context.auth.uid;
-
-  // Gate: only organizer accounts can create events
-  const userSnap = await db().collection("users").doc(uid).get();
-  const userRole = userSnap.data()?.role;
-
-  if (userRole !== "organizer") {
-    throw new functions.https.HttpsError(
-      "permission-denied",
-      "Organizer account required to create events."
-    );
-  }
-
-  const { name, startsAt, endsAt } = data ?? {};
+  const { name, startsAt, endsAt } = data;
   if (typeof name !== "string" || name.trim().length < 2) {
-    throw new functions.https.HttpsError("invalid-argument", "Event name required.");
+    throw new HttpsError("invalid-argument", "Event name required.");
   }
 
-  const eventRef = db().collection("events").doc();
+  const ref = db().collection("events").doc();
   const now = new Date();
 
-  await eventRef.set({
+  await ref.set({
     name: name.trim(),
     startsAt: startsAt ?? null,
     endsAt: endsAt ?? null,
-    createdBy: uid,
+    createdBy: auth.uid,
     createdAt: now,
   });
 
-  // creator becomes organizer for this event
-  await eventRef.collection("members").doc(uid).set({
+  await ref.collection("members").doc(auth.uid).set({
     role: "organizer",
     joinedAt: now,
   });
 
-  return { eventId: eventRef.id };
+  return { eventId: ref.id };
 });
 
-// 2) Create an invite code for an event (callable)
-export const createInvite = functions.https.onCall(async (data, context) => {
-  if (!context.auth) {
-    throw new functions.https.HttpsError("unauthenticated", "Login required.");
+// 2) Create invite
+export const createInvite = onCall(async (request) => {
+  const data = (request.data ?? {}) as any;
+  const auth = request.auth;
+
+  if (!auth) throw new HttpsError("unauthenticated", "Login required.");
+
+  const { eventId, role, maxUses } = data;
+  if (!eventId || (role !== "attendee" && role !== "organizer")) {
+    throw new HttpsError("invalid-argument", "Invalid invite data.");
   }
 
-  const { eventId, role, maxUses } = data ?? {};
-  if (typeof eventId !== "string" || eventId.length < 3) {
-    throw new functions.https.HttpsError("invalid-argument", "eventId required.");
-  }
-  if (role !== "attendee" && role !== "organizer") {
-    throw new functions.https.HttpsError(
-      "invalid-argument",
-      "role must be attendee or organizer."
-    );
-  }
-
-  const uid = context.auth.uid;
-
-  // Ensure caller is an organizer for this event
   const memberSnap = await db()
     .collection("events")
     .doc(eventId)
     .collection("members")
-    .doc(uid)
+    .doc(auth.uid)
     .get();
 
-  if (!memberSnap.exists || memberSnap.data()?.role !== "organizer") {
-    throw new functions.https.HttpsError("permission-denied", "Organizer access required.");
+  if (memberSnap.data()?.role !== "organizer") {
+    throw new HttpsError("permission-denied", "Organizer access required.");
   }
 
-  // generate unique code (retry a few times)
-  let code = "";
-  for (let i = 0; i < 10; i++) {
-    const candidate = makeCode();
-    const existing = await db().collection("inviteCodes").doc(candidate).get();
-    if (!existing.exists) {
-      code = candidate;
-      break;
-    }
-  }
-  if (!code) {
-    throw new functions.https.HttpsError("internal", "Failed to generate unique code.");
-  }
-
+  const code = makeCode();
   const inviteRef = db().collection("events").doc(eventId).collection("invites").doc();
   const now = new Date();
 
@@ -186,10 +133,9 @@ export const createInvite = functions.https.onCall(async (data, context) => {
     uses: 0,
     maxUses: typeof maxUses === "number" ? maxUses : null,
     createdAt: now,
-    createdBy: uid,
+    createdBy: auth.uid,
   });
 
-  // lookup index by code
   await db().collection("inviteCodes").doc(code).set({
     eventId,
     inviteId: inviteRef.id,
@@ -198,214 +144,44 @@ export const createInvite = functions.https.onCall(async (data, context) => {
     createdAt: now,
   });
 
-  return { code, inviteId: inviteRef.id };
+  return { code };
 });
 
-// 3) Join event using invite code (callable)
-export const joinWithCode = functions.https.onCall(async (data, context) => {
-  if (!context.auth) {
-    throw new functions.https.HttpsError("unauthenticated", "Login required.");
-  }
+// 3) Join event
+export const joinWithCode = onCall(async (request) => {
+  const data = (request.data ?? {}) as any;
+  const auth = request.auth;
 
-  const { code } = data ?? {};
-  if (typeof code !== "string" || code.trim().length < 4) {
-    throw new functions.https.HttpsError("invalid-argument", "code required.");
-  }
+  if (!auth) throw new HttpsError("unauthenticated", "Login required.");
 
-  const uid = context.auth.uid;
-  const normalized = code.trim().toUpperCase();
+  const code = typeof data.code === "string" ? data.code.trim().toUpperCase() : "";
+  if (!code) throw new HttpsError("invalid-argument", "Code required.");
 
-  // lookup
-  const codeSnap = await db().collection("inviteCodes").doc(normalized).get();
-  if (!codeSnap.exists) {
-    throw new functions.https.HttpsError("not-found", "Invalid code.");
-  }
+  const snap = await db().collection("inviteCodes").doc(code).get();
+  if (!snap.exists) throw new HttpsError("not-found", "Invalid code.");
 
-  const { eventId, inviteId, role, active } = codeSnap.data() as any;
-  if (!active) {
-    throw new functions.https.HttpsError("failed-precondition", "Invite is inactive.");
-  }
+  const { eventId, inviteId, role, active } = snap.data() as any;
+  if (!active) throw new HttpsError("failed-precondition", "Invite is inactive.");
 
-  const inviteRef = db().collection("events").doc(eventId).collection("invites").doc(inviteId);
-  const memberRef = db().collection("events").doc(eventId).collection("members").doc(uid);
+  await db()
+    .collection("events")
+    .doc(eventId)
+    .collection("members")
+    .doc(auth.uid)
+    .set({ role, joinedAt: new Date() }, { merge: true });
 
-  await db().runTransaction(async (tx) => {
-    const invite = await tx.get(inviteRef);
-    if (!invite.exists) throw new functions.https.HttpsError("not-found", "Invite missing.");
-
-    const inv = invite.data() as any;
-    if (!inv.active) throw new functions.https.HttpsError("failed-precondition", "Invite is inactive.");
-
-    const currentUses = inv.uses ?? 0;
-    const max = inv.maxUses ?? null;
-
-    if (typeof max === "number" && currentUses >= max) {
-      throw new functions.https.HttpsError("failed-precondition", "Invite has reached max uses.");
-    }
-
-    // create/overwrite membership
-    tx.set(memberRef, { role, joinedAt: new Date() }, { merge: true });
-    tx.update(inviteRef, { uses: currentUses + 1 });
-  });
+  // ✅ increment uses using admin FieldValue
+  await db()
+    .collection("events")
+    .doc(eventId)
+    .collection("invites")
+    .doc(inviteId)
+    .update({ uses: FieldValue.increment(1) });
 
   return { eventId, role };
 });
 
-export const getEmergencyProfile = functions.https.onCall(async (data, context) => {
-  if (!context.auth) {
-    throw new functions.https.HttpsError("unauthenticated", "Login required.");
-  }
-
-  const organizerUid = context.auth.uid;
-  const { eventId, attendeeUid, reason } = data ?? {};
-
-  if (typeof eventId !== "string" || eventId.length < 3) {
-    throw new functions.https.HttpsError("invalid-argument", "eventId required.");
-  }
-  if (typeof attendeeUid !== "string" || attendeeUid.length < 3) {
-    throw new functions.https.HttpsError("invalid-argument", "attendeeUid required.");
-  }
-
-  const logRef = db().collection("emergencyAccessLogs").doc();
-  const now = new Date();
-
-  // Helper: write log
-  const writeLog = async (success: boolean) => {
-    await logRef.set({
-      organizerUid,
-      attendeeUid,
-      eventId,
-      reason: typeof reason === "string" ? reason.slice(0, 200) : null,
-      success,
-      createdAt: now,
-    });
-  };
-
-  // 1) Verify organizer is organizer for this event
-  const organizerMemberSnap = await db()
-    .collection("events").doc(eventId)
-    .collection("members").doc(organizerUid)
-    .get();
-
-  if (!organizerMemberSnap.exists || organizerMemberSnap.data()?.role !== "organizer") {
-    await writeLog(false);
-    throw new functions.https.HttpsError("permission-denied", "Organizer access required.");
-  }
-
-  // 2) Verify attendee is part of event (optional but nice)
-  const attendeeMemberSnap = await db()
-    .collection("events").doc(eventId)
-    .collection("members").doc(attendeeUid)
-    .get();
-
-  if (!attendeeMemberSnap.exists) {
-    await writeLog(false);
-    throw new functions.https.HttpsError("not-found", "Attendee is not in this event.");
-  }
-
-  // 3) Fetch profile and enforce consent
-  const profileSnap = await db().collection("profiles").doc(attendeeUid).get();
-  if (!profileSnap.exists) {
-    await writeLog(false);
-    throw new functions.https.HttpsError("not-found", "Profile not found.");
-  }
-
-  const p = profileSnap.data() as any;
-  if (p.consentToShareInEmergency !== true) {
-    await writeLog(false);
-    throw new functions.https.HttpsError("failed-precondition", "User did not consent to share emergency info.");
-  }
-
-  await writeLog(true);
-
-  // Return only what emergency view needs
-  return {
-    displayName: p.displayName ?? null,
-    photoURL: p.photoURL ?? null,
-    over18: p.over18 ?? null,
-    age: p.age ?? null,
-    emergencyContact: p.emergencyContact ?? null,
-    allergiesConditions: p.allergiesConditions ?? null,
-    medications: p.medications ?? null,
-    updatedAt: p.updatedAt ?? null,
-  };
-});
-
-
-export const upsertProfile = functions.https.onCall(async (data, context) => {
-  if (!context.auth) {
-    throw new functions.https.HttpsError("unauthenticated", "Login required.");
-  }
-
-  const uid = context.auth.uid;
-
-  const {
-    displayName,
-    over18,
-    age,
-    emergencyContact,
-    allergiesConditions,
-    medications,
-    consentToShareInEmergency,
-    photoURL,
-  } = data ?? {};
-
-  if (typeof displayName !== "string" || displayName.trim().length < 1) {
-    throw new functions.https.HttpsError("invalid-argument", "Name is required.");
-  }
-  if (consentToShareInEmergency !== true) {
-    throw new functions.https.HttpsError(
-      "failed-precondition",
-      "Consent is required to complete the profile."
-    );
-  }
-
-  // Choose one: over18 checkbox is simplest. Allow age optionally.
-  const normalizedOver18 =
-    typeof over18 === "boolean" ? over18 : null;
-
-  const normalizedAge =
-    typeof age === "number" && Number.isFinite(age) && age >= 0 && age <= 120
-      ? Math.floor(age)
-      : null;
-
-  const normalizedEmergencyContact =
-    emergencyContact &&
-    typeof emergencyContact === "object" &&
-    typeof emergencyContact.name === "string" &&
-    typeof emergencyContact.phone === "string"
-      ? {
-          name: emergencyContact.name.trim(),
-          phone: emergencyContact.phone.trim(),
-        }
-      : null;
-
-  const now = new Date();
-  const profileRef = db().collection("profiles").doc(uid);
-
-  // If profile exists, preserve completedAt; otherwise set it.
-  await db().runTransaction(async (tx) => {
-    const snap = await tx.get(profileRef);
-    const existing = snap.exists ? (snap.data() as any) : null;
-
-    tx.set(
-      profileRef,
-      {
-        displayName: displayName.trim(),
-        photoURL: typeof photoURL === "string" ? photoURL : (existing?.photoURL ?? null),
-        over18: normalizedOver18,
-        age: normalizedAge,
-        emergencyContact: normalizedEmergencyContact,
-        allergiesConditions: typeof allergiesConditions === "string" ? allergiesConditions : null,
-        medications: typeof medications === "string" ? medications : null,
-        consentToShareInEmergency: true,
-        completedAt: existing?.completedAt ?? now,
-        updatedAt: now,
-      },
-      { merge: true }
-    );
-  });
-
-  return { ok: true };
-});
-
+// Other routes
+export { createReportFn, claimReportFn, resolveReportFn, postReportMessageFn } from "./reports/reports.routes";
+export { createTestEventFn } from "./testing/createTestEvent";
+export { setUserRoleTestFn } from "./testing/testAdmin.routes";

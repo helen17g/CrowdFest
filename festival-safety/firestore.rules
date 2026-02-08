@@ -2,67 +2,44 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ---------- Helpers ----------
     function signedIn() {
       return request.auth != null;
     }
 
-    function isSelf(uid) {
-      return signedIn() && request.auth.uid == uid;
+    function isEventOrganizer(eventId) {
+      return signedIn()
+        && get(/databases/$(database)/documents/events/$(eventId)/members/$(request.auth.uid)).data.role == "organizer";
     }
 
-    // ---------- Users (non-sensitive) ----------
-    match /users/{uid} {
-      // User can read their own user doc (for routing/dashboard)
-      allow read: if isSelf(uid);
-
-      // Created by backend only
-      allow create: if false;
-
-      // User can update their own doc EXCEPT role
-      allow update: if isSelf(uid)
-        && !("role" in request.resource.data.diff(resource.data).changedKeys());
-
-      allow delete: if false;
+    function isReportOwner(eventId, reportId) {
+      return signedIn()
+        && get(/databases/$(database)/documents/events/$(eventId)/reports/$(reportId)).data.createdByUid == request.auth.uid;
     }
 
-    // ---------- Profiles (SENSITIVE: medical info) ----------
-    match /profiles/{uid} {
-      // User can read & write ONLY their own profile
-      allow read, write: if isSelf(uid);
-
-      // No one else (including organizers) can read directly
-    }
-
-    // ---------- Events ----------
     match /events/{eventId} {
-      // Signed-in users can read events
-      allow read: if signedIn();
+      match /reports/{reportId} {
 
-      // Events are created/managed via Cloud Functions only
-      allow write: if false;
+        // (you probably already have something like this for reports)
+        allow read: if isEventOrganizer(eventId) || isReportOwner(eventId, reportId);
 
-      // Event membership
-      match /members/{uid} {
-        allow read: if signedIn();
-        allow write: if false;
+        match /messages/{messageId} {
+          // ✅ allow listing/reading messages for organizers or report owner
+          allow read, list: if isEventOrganizer(eventId) || isReportOwner(eventId, reportId);
+
+          // ✅ allow creating messages for organizers or report owner
+          allow create: if isEventOrganizer(eventId) || isReportOwner(eventId, reportId);
+
+          // optional: no edits/deletes
+          allow update, delete: if false;
+        }
+
+        // optional: lock down actions too
+        match /actions/{actionId} {
+          allow read, list: if isEventOrganizer(eventId);
+          allow create: if isEventOrganizer(eventId);
+          allow update, delete: if false;
+        }
       }
-
-      // Invites managed via Cloud Functions
-      match /invites/{inviteId} {
-        allow read, write: if false;
-      }
-    }
-
-    // ---------- Invite Code Lookup ----------
-    match /inviteCodes/{code} {
-      allow read, write: if false;
-    }
-
-    // ---------- Emergency Access Logs ----------
-    match /emergencyAccessLogs/{logId} {
-      // Written only by Cloud Functions
-      allow read, write: if false;
     }
   }
 }
