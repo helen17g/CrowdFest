@@ -1,7 +1,7 @@
 <img width="144" height="144" alt="image" src="https://github.com/user-attachments/assets/339b11cc-995c-4df0-977a-ae1f94c1dbd8" />
 
-# CrowdFest ⋆｡°✩Won 2nd at Women in Computer Science Hackathon 2026 ⋆｡°✩
-
+# CrowdFest 
+⋆｡°✩Won 2nd at Women in Computer Science Hackathon 2026 ⋆｡°✩
 # Description
 CrowdFest is a festival safety platform designed to protect attendees and support organizers during large-scale events. The system enables real-time crowd monitoring, attendee safety reporting, and intelligent alerts to prevent dangerous situations such as crowd surges, medical emergencies, and harassment. Attendees use a mobile app to access events, view crowd density, receive safety notifications, and report incidents, while organizers use mobile and web tools to manage events, monitor risks, respond to reports, and coordinate safety actions efficiently.
 
